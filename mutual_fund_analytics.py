@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 from datetime import date, timedelta
 
-RISK_FREE_RATE = 0.053  # 5.3% annual (90-day treasury bill)
+RISK_FREE_RATE = 0.053  # 5.3% annual (91-day treasury bill)
 
 
 def get_last_business_day_of_prev_month():
@@ -32,6 +32,14 @@ def get_nav_data(scheme_code):
     return df, payload["meta"]
 
 
+def to_monthly_nav(df):
+    """Pick the last available NAV for each calendar month (end-of-month NAV)."""
+    df = df.copy()
+    df["ym"] = df["date"].dt.to_period("M")
+    monthly = df.groupby("ym").last().reset_index()
+    return monthly
+
+
 def nearest_nav(df, target):
     subset = df[df["date"] <= pd.Timestamp(target)]
     return float(subset.iloc[-1]["nav"]) if not subset.empty else None
@@ -43,10 +51,11 @@ def cagr(nav_start, nav_end, years):
     return (nav_end / nav_start) ** (1 / years) - 1
 
 
-def annualised_volatility(df, start, end):
-    mask = (df["date"] >= pd.Timestamp(start)) & (df["date"] <= pd.Timestamp(end))
-    window = df[mask]["nav"].pct_change().dropna()
-    return float(window.std() * np.sqrt(252)) if len(window) >= 2 else None
+def annualised_volatility_monthly(monthly_df, start, end):
+    """Annualised volatility from monthly returns (Value Research / Morningstar standard)."""
+    mask = (monthly_df["date"] >= pd.Timestamp(start)) & (monthly_df["date"] <= pd.Timestamp(end))
+    window = monthly_df[mask]["nav"].pct_change().dropna()
+    return float(window.std() * np.sqrt(12)) if len(window) >= 2 else None
 
 
 def sharpe(ret, vol, rfr=RISK_FREE_RATE):
@@ -78,6 +87,8 @@ def analyze(query, risk_free_rate=RISK_FREE_RATE):
             print(f"  (+ {len(results) - 1} other match(es) — using top result)")
 
     df, meta = get_nav_data(scheme_code)
+    monthly_df = to_monthly_nav(df)
+
     print(f"\nFund      : {meta.get('scheme_name', 'N/A')}")
     print(f"Category  : {meta.get('scheme_category', 'N/A')}")
     print(f"Fund House: {meta.get('fund_house', 'N/A')}")
@@ -89,6 +100,7 @@ def analyze(query, risk_free_rate=RISK_FREE_RATE):
         return
 
     print(f"\nBase date : {base.strftime('%d %b %Y')}  |  Base NAV: {nav_base:.4f}")
+    print(f"Methodology: Monthly NAV returns, Vol = std × √12  (Value Research / Morningstar standard)")
 
     results_table = {}
     for years in (3, 5):
@@ -99,7 +111,7 @@ def analyze(query, risk_free_rate=RISK_FREE_RATE):
 
         nav_start = nearest_nav(df, start)
         r = cagr(nav_start, nav_base, years)
-        v = annualised_volatility(df, start, base)
+        v = annualised_volatility_monthly(monthly_df, start, base)
         s = sharpe(r, v, risk_free_rate)
         results_table[years] = (r, v, s)
 
